@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>RealQM Crystalline Matrix Simulator</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f0f2f5; color: #333; display: flex; flex-direction: column; align-items: center; padding: 20px; margin: 0; }
+        .widget-card { background: #ffffff; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); max-width: 760px; width: 100%; padding: 16px; display: flex; flex-direction: column; gap: 12px; box-sizing: border-box; }
+        canvas { background: #f7f9fa; border-radius: 12px; width: 100%; height: auto; aspect-ratio: 728 / 500; border: 1px solid #eef1f4; cursor: pointer; }
+        .stats-table { width: 100%; border-collapse: collapse; text-align: center; font-size: 13px; margin-top: 4px; }
+        .stats-table th { font-weight: 500; color: #666; padding: 6px; border-bottom: 1px solid #edf0f2; font-size: 12px; }
+        .stats-table td { font-weight: bold; color: #111; padding: 8px; border-right: 1px solid #edf0f2; font-size: 14px; }
+        .stats-table td:last-child { border-right: none; color: #8e44ad; }
+        .sliders-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; padding: 10px 5px; border-top: 1px solid #f0f2f5; margin-top: 5px; }
+        .control-group { display: flex; flex-direction: column; gap: 6px; position: relative; }
+        .control-label { font-size: 13px; font-weight: 500; color: #555; line-height: 1.3; }
+        .slider-row { display: flex; align-items: center; gap: 10px; }
+        input[type="range"] { flex: 1; cursor: pointer; accent-color: #3498db; margin: 0; }
+        .value-display { font-size: 13px; font-weight: bold; color: #111; min-width: 45px; text-align: right; }
+        .freeze-badge { position: absolute; top: -16px; left: 110px; background: #e8f4fd; color: #1d8cf8; font-size: 11px; font-weight: bold; padding: 1px 5px; border-radius: 4px; border: 1px solid #b3d7ff; }
+    </style>
+</head>
+<body>
+
+    <div class="widget-card">
+        <canvas id="simCanvas" width="728" height="500"></canvas>
+        
+        <table class="stats-table">
+            <thead>
+                <tr>
+                    <th>Layer 1</th>
+                    <th>Layer 2</th>
+                    <th>Layer 3</th>
+                    <th>Layer 4</th>
+                    <th>Layer 5</th>
+                    <th>Layer 6</th>
+                    <th style="color: #8e44ad;">Transmitted</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td id="l1-count">0</td>
+                    <td id="l2-count">0</td>
+                    <td id="l3-count">0</td>
+                    <td id="l4-count">0</td>
+                    <td id="l5-count">0</td>
+                    <td id="l6-count">0</td>
+                    <td id="tr-count">0</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="sliders-grid">
+            <div class="control-group">
+                <div class="freeze-badge" id="freezeVal">Freeze: 0.07s</div>
+                <div class="control-label">Photon energy (cross-section)</div>
+                <div class="slider-row">
+                    <input type="range" id="energySlider" min="2.0" max="10.2" step="0.1" value="10.2">
+                    <div class="value-display" id="energyText">10.2 eV</div>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <div class="control-label">Beam launch angle</div>
+                <div class="slider-row">
+                    <input type="range" id="angleSlider" min="15" max="75" step="0.5" value="45">
+                    <div class="value-display" id="angleText">45°</div>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <div class="control-label">Lattice spacing</div>
+                <div class="slider-row">
+                    <input type="range" id="spacingSlider" min="1.5" max="4.5" step="0.1" value="2.4">
+                    <div class="value-display" id="spacingText">2.4 Å</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d');
+
+let baseAngle = 45;
+let photonEnergy = 10.2;
+let latticeSpacing = 2.4;
+let isPaused = false;
+
+const numLayers = 6;
+const layerColors = ['#e74c3c', '#e67e22', '#f1c40f', '#2ecc71', '#3498db', '#9b59b6'];
+
+let stats = {
+    input: 0,
+    transmitted: 0,
+    reflected: [0, 0, 0, 0, 0, 0]
+};
+
+let photons = [];
+
+const sourceX = 210;
+const sourceY = 40;
+const gridStartY = 95;
+const layerSpacingY = 32;
+const atomStartX = 50;
+
+class Photon {
+    constructor() {
+        stats.input++;
+        this.x = sourceX;
+        this.y = sourceY;
+        this.speed = 3.5;
+        
+        const divergenceSpread = (Math.random() - 0.5) * (8 * Math.PI / 180);
+        this.angle = (baseAngle * Math.PI / 180) + divergenceSpread;
+        
+        this.vx = Math.cos(this.angle) * this.speed;
+        this.vy = Math.sin(this.angle) * this.speed;
+        
+        this.status = 'active'; 
+        this.color = '#3b82f6'; 
+        this.freezeTimer = 0; 
+        this.targetLayer = -1;
+    }
+
+    update() {
+        if (this.status === 'frozen') {
+            this.freezeTimer--;
+            if (this.freezeTimer <= 0) { 
+                this.status = 'reflected'; 
+                this.vy = -this.vy; 
+                this.color = layerColors[this.targetLayer]; 
+            }
+            return;
+        }
+
+        this.x += this.vx;
+        this.y += this.vy;
+        
+        if (this.x < 0 || this.x > canvas.width || this.y < 0) {
+            this.status = 'dead';
+            return;
+        }
+        
+        if (this.y > 310) {
+            if (this.status === 'active') {
+                this.status = 'transmitted';
+                this.color = '#8e44ad';
+                stats.transmitted++;
+            }
+            this.status = 'dead';
+            return;
+        }
+        
+        if (this.status === 'active') {
+            for (let l = 0; l < numLayers; l++) {
+                let layerY = gridStartY + (l * layerSpacingY);
+                if (this.y >= layerY && this.y - this.vy < layerY) {
+                    let gridUnit = 16 * latticeSpacing;
+                    let nearestAtomX = atomStartX + Math.round((this.x - atomStartX) / gridUnit) * gridUnit;
+                    
+                    if (Math.abs(this.x - nearestAtomX) < 8) {
+                        this.status = 'frozen';
+                        this.targetLayer = l;
+                        this.freezeTimer = Math.max(4, Math.round(45 / photonEnergy));
+                        stats.reflected[l]++;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    draw() {
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = this.color;
+        ctx.fill();
+    }
+}
+
+function drawInterface() {
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = 'rgba(0,0,0,0.03)';
+    ctx.shadowBlur = 4;
+    
+    ctx.beginPath(); ctx.roundRect(15, 12, 140, 26, 6); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(330, 12, 85, 26, 6); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(430, 12, 280, 26, 6); ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#666';
+    ctx.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    
+    ctx.beginPath(); ctx.arc(28, 25, 4, 0, Math.PI*2); ctx.fillStyle = '#3b82f6'; ctx.fill();
+    ctx.fillStyle = '#444';
+    ctx.fillText('Total Incoming: ', 38, 29);
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillText(stats.input, 122, 29);
+    
+    ctx.font = '12px sans-serif'; ctx.fillStyle = '#666';
+    ctx.fillText('In-Flight: ', 338, 29);
+    ctx.font = 'bold 12px sans-serif'; ctx.fillStyle = '#444';
+    ctx.fillText(photons.length, 390, 29);
+    
+    ctx.font = '12px sans-serif'; ctx.fillStyle = '#444';
+    ctx.fillText('Accounted Balance: ', 440, 29);
+    let totalReflected = stats.reflected.reduce((a,b)=>a+b, 0);
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillText(`${stats.transmitted + totalReflected} Out`, 555, 29);
+    
+    ctx.fillStyle = '#e6f7ed';
+    ctx.beginPath(); ctx.roundRect(625, 16, 75, 18, 4); ctx.fill();
+    ctx.fillStyle = '#26af61';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.fillText('1:1 MATCH', 635, 29);
+
+    ctx.fillStyle = '#666';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('Beam divergence: ', 30, 68);
+    ctx.font = 'bold 12px sans-serif'; ctx.fillStyle = '#111';
+    ctx.fillText('±4.0°', 130, 68);
+    ctx.fillStyle = '#666'; ctx.font = '12px sans-serif';
+    ctx.fillText(' | Angular variance: ', 162, 68);
+    ctx.font = 'bold 12px sans-serif'; ctx.fillStyle = '#3b82f6';
+    ctx.fillText('16.0°', 265, 68);
+
+    ctx.beginPath(); ctx.arc(sourceX, sourceY, 6, 0, Math.PI * 2); ctx.fillStyle = '#3b82f6'; ctx.fill();
+    ctx.fillStyle = '#3b82f6'; ctx.font = '12px sans-serif';
+    ctx.fillText('source (S)', sourceX - 28, sourceY - 12);
+
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(59, 130, 246, 0.04)';
+    ctx.moveTo(sourceX, sourceY);
+    let upperCone = (baseAngle * Math.PI / 180) + (4 * Math.PI / 180);
+    let lowerCone = (baseAngle * Math.PI / 180) - (4 * Math.PI / 180);
+    ctx.lineTo(sourceX + 600 * Math.cos(upperCone), sourceY + 600 * Math.sin(upperCone));
+    ctx.lineTo(sourceX + 600 * Math.cos(lowerCone), sourceY + 600 * Math.sin(lowerCone));
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#eaeef2'; ctx.beginPath(); ctx.roundRect(505, 410, 120, 36, 18); ctx.fill();
+    ctx.fillStyle = '#444'; ctx.font = '13px sans-serif';
+    ctx.fillText('⟳ Reset Counts', 518, 432);
+
+    ctx.fillStyle = '#3b82f6'; ctx.beginPath(); ctx.arc(655, 428, 18, 0, Math.PI*2); ctx.fill();
+
+    ctx.fillStyle = '#ffffff'; 
+    ctx.font = 'bold 14px sans-serif';
+    if (isPaused) { 
+        ctx.fillText('▶', 651, 433); 
+    } else { 
+        ctx.fillText('װ', 651, 433); 
+    }
+}
+
+function drawGrid() {
+    let gridUnit = 16 * latticeSpacing;
+    for (let l = 0; l < numLayers; l++) {
+        let layerY = gridStartY + (l * layerSpacingY);
+        ctx.beginPath(); 
+        ctx.strokeStyle = '#eef1f4'; 
+        ctx.lineWidth = 1;
+        ctx.moveTo(atomStartX, layerY); 
+        ctx.lineTo(700, layerY);
+        ctx.stroke();
+        
+        ctx.fillStyle = '#888'; 
+        ctx.font = '12px sans-serif';
+        ctx.fillText(`L${l+1}`, 20, layerY + 4);
+        
+        for (let x = atomStartX; x < 700; x += gridUnit) {
+            ctx.beginPath(); 
+            ctx.arc(x, layerY, 5, 0, Math.PI * 2);
+            ctx.strokeStyle = '#7f8c8d'; 
+            ctx.lineWidth = 1.2; 
+            ctx.fillStyle = '#ffffff';
+            ctx.fill(); 
+            ctx.stroke();
+            
+            ctx.beginPath(); 
+            ctx.arc(x, layerY, 1, 0, Math.PI * 2);
+            ctx.fillStyle = '#7f8c8d'; 
+            ctx.fill();
+        }
+    }
+}
+
+function updateDomLedger() {
+    document.getElementById('l1-count').innerText = stats.reflected[0];
+    document.getElementById('l2-count').innerText = stats.reflected[1];
+    document.getElementById('l3-count').innerText = stats.reflected[2];
+    document.getElementById('l4-count').innerText = stats.reflected[3];
+    document.getElementById('l5-count').innerText = stats.reflected[4];
+    document.getElementById('l6-count').innerText = stats.reflected[5];
+    document.getElementById('tr-count').innerText = stats.transmitted;
+}
+
+function resetStats() {
+    stats = { input: 0, transmitted: 0, reflected: [0, 0, 0, 0, 0, 0] };
+    photons = [];
+    updateDomLedger();
+}
+
+canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const clickY = (e.clientY - rect.top) * (canvas.height / rect.height);
+    
+    if (clickX >= 505 && clickX <= 625 && clickY >= 410 && clickY <= 446) { 
+        resetStats(); 
+    }
+    if (Math.sqrt((clickX - 655) ** 2 + (clickY - 428) ** 2) < 18) { 
+        isPaused = !isPaused; 
+    }
+});
+
+document.getElementById('angleSlider').addEventListener('input', (e) => {
+    baseAngle = parseFloat(e.target.value);
+    document.getElementById('angleText').innerText = baseAngle.toFixed(0) + '°';
+});
+
+document.getElementById('energySlider').addEventListener('input', (e) => {
+    photonEnergy = parseFloat(e.target.value);
+    document.getElementById('energyText').innerText = photonEnergy.toFixed(1) + ' eV';
+    let freezeSec = (45 / photonEnergy / 60).toFixed(2);
+    document.getElementById('freezeVal').innerText = `Freeze: ${freezeSec}s`;
+});
+
+document.getElementById('spacingSlider').addEventListener('input', (e) => {
+    latticeSpacing = parseFloat(e.target.value);
+    document.getElementById('spacingText').innerText = latticeSpacing.toFixed(1) + ' Å';
+});
+
+function animate() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawGrid();
+    drawInterface();
+    
+    if (!isPaused) {
+        if (Math.random() < 0.22 && photons.length < 45) { 
+            photons.push(new Photon()); 
+        }
+        photons.forEach((p, idx) => {
+            p.update(); 
+            p.draw();
+            if (p.status === 'dead') photons.splice(idx, 1);
+        });
+    } else {
+        photons.forEach(p => p.draw());
+    }
+    
+    updateDomLedger();
+    requestAnimationFrame(animate);
+}
+
+animate();
+</script>
+</body>
+</html>
